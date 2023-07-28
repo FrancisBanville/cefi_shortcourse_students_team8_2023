@@ -198,6 +198,26 @@ ggplot(noaa_future_daily, aes(x=datetime, y=air_temperature)) +
   coord_cartesian(xlim = c(forecast_date - days(60),
                            forecast_date + days(35)))+
   facet_wrap(~site_id, scales = 'free')
+
+ggsave("figures/temp_prediction.jpg")
+```
+
+Precipitation prediction plot
+
+```{r echo = T, fig.cap = c('Figure: historic and future NOAA air temeprature forecasts at lake sites', 'Figure: last two months of historic air temperature forecasts and 35 day ahead forecast')}
+ggplot(noaa_future_daily, aes(x=datetime, y=precipitation_flux)) +
+  geom_line(aes(group = parameter), alpha = 0.4)+
+  geom_line(data = noaa_past_mean, colour = 'darkblue') +
+  facet_wrap(~site_id, scales = 'free')
+
+ggplot(noaa_future_daily, aes(x=datetime, y=precipitation_flux)) +
+  geom_line(aes(group = parameter), alpha = 0.4)+
+  geom_line(data = noaa_past_mean, colour = 'darkblue') +
+  coord_cartesian(xlim = c(forecast_date - days(60),
+                           forecast_date + days(35)))+
+  facet_wrap(~site_id, scales = 'free')
+
+ggsave("figures/precip_prediction.jpg")
 ```
 
 # Model fitting
@@ -589,6 +609,14 @@ forecast_max <- forecast_df %>%
 
 forecast_max %>%
   filter(max == max(max))
+
+ggplot(forecast_max) +
+  geom_line(aes(x = datetime, y = max), size = 2, col = "#0C7C59", alpha = 0.8) +
+    xlab("date") +
+    ylab("Maximum Temperature (C)") +
+    theme_classic()
+
+ggsave("figures/Q2_SUGG.jpg")
 ```
 
 
@@ -867,6 +895,13 @@ forecast_max <- forecast_df %>%
 
 forecast_max %>%
   filter(max == max(max))
+
+ggplot(forecast_max) +
+  geom_line(aes(x = datetime, y = max), size = 2, col = "#0C7C59", alpha = 0.8) +
+    xlab("date") +
+    ylab("Maximum Temperature (C)") +
+    theme_classic()
+ggsave("figures/Q2_BARC.jpg")
 ```
 
 
@@ -1188,7 +1223,7 @@ forecast_df %>%
   geom_vline(aes(linetype = 'reference_datetime', 
                  xintercept = as_date(max(targets$datetime))), 
              colour = 'blue', size = 1.5) +
-  labs(title = 'site_id', subtitle = 'variable = temperature', caption = 'prediction') + 
+  labs(title = 'SUGG', subtitle = 'variable = temperature', caption = 'prediction') + 
   annotate("text", x = min(forecast_df$datetime) - days(10), y = 40, label = "past")  +
   annotate("text", x = min(forecast_df$datetime) + days(12), y = 40, label = "future")  +
   theme_bw() +
@@ -1236,6 +1271,14 @@ forecast_max <- forecast_df %>%
 
 forecast_max %>%
   filter(max == max(max))
+
+ggplot(forecast_max) +
+  geom_line(aes(x = datetime, y = max), size = 2, col = "#0C7C59", alpha = 0.8) +
+    xlab("date") +
+    ylab("Maximum Temperature (C)") +
+    theme_classic()
+
+ggsave("figures/Q2_SUGG_wind.jpg")
 ```
 
 
@@ -1462,6 +1505,14 @@ forecast_max <- forecast_df %>%
 
 forecast_max %>%
   filter(max == max(max))
+
+ggplot(forecast_max) +
+  geom_line(aes(x = datetime, y = max), size = 2, col = "#0C7C59", alpha = 0.8) +
+    xlab("date") +
+    ylab("Maximum Temperature (C)") +
+    theme_classic()
+
+ggsave("figures/Q2_BARC_wind.jpg")
 ```
 
 
