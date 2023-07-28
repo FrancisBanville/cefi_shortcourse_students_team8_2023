@@ -857,4 +857,35 @@ forecast_df_efi <- forecast_df %>%
   select(model_id, datetime, reference_datetime, site_id, family, parameter, variable, prediction)
 ```
 
+Q2: What are the maximum concentrations that will occur in the next 30 days? And when will this maximum level occur?
+
+Take the 95% quantile.
+```{r}
+forecast_max <- forecast_df %>% 
+  group_by(datetime) %>% 
+  summarise(max = quantile(prediction, 0.95))
+
+forecast_max %>%
+  filter(max == max(max))
+```
+
+
+Q4: What are the chances that the lake(s) will be closed in the next month for swimming?
+ 
+```{r}
+forecast_p20 <- forecast_df %>% 
+  group_by(datetime) %>% 
+  summarise(n = n(), n_20 = sum(prediction > 20)) %>%
+  mutate(p_20 = n_20 / n) 
+
+ggplot(forecast_p20) +
+  geom_line(aes(x = datetime, y = p_20), size = 2, col = "#0C7C59", alpha = 0.8) +
+  geom_hline(yintercept=0.5, size = 0.8, linetype="dashed", color = "red") +
+    xlab("date") +
+    ylab("probability of closing the lake ([Chla] > 20 mg/L)") +
+    theme_classic()
+
+ggsave("figures/Q4_BARC.jpg")
+```
+
 
