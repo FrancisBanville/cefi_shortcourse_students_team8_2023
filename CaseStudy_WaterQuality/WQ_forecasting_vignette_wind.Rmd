@@ -450,7 +450,7 @@ For the NEON forecast Challenge (including the aquatics theme) the following sta
 Q2: What are the maximum concentrations that will occur in the next 30 days? And when will this maximum level occur?
 
 Take the 95% quantile.
-```{r}
+```{r forecast max}
 forecast_max <- forecast_df %>% 
   group_by(datetime) %>% 
   summarise(max = quantile(prediction, 0.95))
@@ -462,7 +462,7 @@ forecast_max %>%
 
 Q4: What are the chances that the lake(s) will be closed in the next month for swimming?
  
-```{r}
+```{r plot prob}
 forecast_p20 <- forecast_df %>% 
   group_by(datetime) %>% 
   summarise(n = n(), n_20 = sum(prediction > 20)) %>%
@@ -476,4 +476,230 @@ ggplot(forecast_p20) +
     theme_classic()
 
 ggsave("figures/Q4_SUGG_wind.jpg")
+```
+
+
+Code for BARC lake
+
+```{r}
+example_site <- 'BARC'
+
+site_target <- targets_lm |> 
+  filter(site_id == example_site)
+
+#Find when the data for the site starts and filter to only 
+#more recent datetimes with no NAs
+first_no_na <- site_target |> 
+  filter(!is.na(air_temperature) & !is.na(chla) &  !is.na(northward_wind) &  !is.na(eastward_wind))  |> 
+  summarise(min = min(datetime)) |> 
+  pull(min)
+
+site_target <- site_target |> 
+  filter(datetime >= first_no_na)
+```
+
+
+```{r}
+data <- list(air_temp = site_target$air_temperature,
+             north_wind = site_target$northward_wind,
+             east_wind = site_target$eastward_wind,
+             y = site_target$chla,
+             n = length(site_target$northward_wind),
+             sd_obs = 0.1,
+             chla_init = site_target$chla[1])
+```
+
+Initialize random variables in JAGS model for each of the 3 chains.
+
+```{r}
+nchain <- 3
+inits <- list()
+for(i in 1:nchain){
+  inits[[i]] <- list(beta1 = rnorm(1, 0.34, 0.05), 
+                     beta2 = rnorm(1, 0.11, 0.05),
+                     beta3 = rnorm(1, 0.16, 0.05),
+                     beta4 = rnorm(1, 0.21, 0.05),
+                     sd_process = runif(1, 0.05, 0.15 ))
+}
+```
+
+Build JAGS model object and fit JAGS code
+
+```{r}
+j.model <- jags.model(file = textConnection(jags_code),
+                      data = data,
+                      inits = inits,
+                      n.chains = 3)
+
+#Run MCMC
+jags.out   <- coda.samples(model = j.model,
+                           variable.names = c("beta1", 
+                                              "beta2",
+                                              "beta3",
+                                              "beta4",
+                                              "chla_latent",
+                                              "sd_process"),
+                           n.iter = 5000)
+```
+
+Convert MCMC object to tidy data and remove iterations in burn-in. We only keep the latent state on last day for use as initial conditions in the forecast.
+
+```{r warning=F}burn_in <- 1000}
+chain <- jags.out %>%
+  tidybayes::spread_draws(beta1, beta2, beta3, beta4, sd_process, chla_latent[day]) |> 
+  filter(.iteration > burn_in) |> 
+  ungroup()
+
+max_day <- max(chain$day)
+chain <- chain |> 
+  filter(day == max_day) |> 
+  select(-day)
+
+
+```
+
+Visualize the chain to inspect for convergence.
+
+```{r}
+chain |> 
+  pivot_longer(beta1:chla_latent, names_to = "variable" , values_to = "value") |> 
+  ggplot(aes(x = .iteration, y = value, color = factor(.chain))) +
+  geom_line() +
+  facet_wrap(~variable, scale = "free")
+```
+
+## Forecast with posteriors
+
+Here we generate a forecast using 500 random draws from the posterior distributions. The following code loops over the samples and then forecasts each day in the future. It also samples from the ensembles in the NOAA weather forecast.
+
+The forecasted values is the latent state forecast with observation uncertainty added.
+
+```{r}
+num_samples <- 500
+
+noaa_future_site <- noaa_future_daily |> 
+  filter(site_id == example_site)
+
+n_days <- length(unique(noaa_future_site$datetime))
+chla_latent <- matrix(NA, num_samples, n_days)   
+y <- matrix(NA, num_samples, n_days) #y is the forecasted observation
+forecast_df <- NULL
+
+
+
+#loop over posterior samples
+for(i in 1:num_samples){
+  sample_index <- sample(x = 1:nrow(chain), size = 1, replace = TRUE)
+  noaa_ensemble <- sample(x = 1:30, size = 1)
+  noaa_future_site_ens <- noaa_future_site |> filter(parameter == noaa_ensemble)
+  #Initialize with a sample from the most recent latent state posterior distribution
+  chla_latent[i,1] <- chain$chla_latent[sample_index]
+  y[i, 1] <- rnorm(1, chla_latent[i,1], sd = data$sd_obs)
+  
+  #loop over forecast days
+  for(j in 2:n_days){
+    pred <- chla_latent[i,j-1] * chain$beta1[sample_index] +
+      noaa_future_site_ens$air_temperature[j] * chain$beta2[sample_index]+
+      noaa_future_site_ens$northward_wind[j]*chain$beta3[sample_index]
+    noaa_future_site_ens$eastward_wind[j]*chain$beta4[sample_index]
+    
+    chla_latent[i,j] <- rnorm(1, pred, chain$sd_process[sample_index])
+    y[i,j] <- rnorm(1, chla_latent[i,j], sd = data$sd_obs)
+    
+  }
+  
+  #Build formatted forecast
+  df <- tibble(datetime = noaa_future_site_ens$datetime,
+               site_id = example_site,
+               variable = "chla",
+               parameter = i,
+               prediction = y[i, ])
+  
+  forecast_df <- bind_rows(forecast_df, df)
+}
+```
+
+We now have 500 possible trajectories of chlorophyll-a at each site and each day. On this plot each line represents one of the possible trajectories and the range of forecasted trajectories is a simple quantification of the uncertainty in our forecast.
+
+Looking back at the forecasts we produced:
+
+```{r, echo = T, warning = F}
+forecast_df %>% 
+  ggplot(.,aes(x=datetime, y=prediction, group = parameter)) + 
+  geom_point(data = subset(targets, site_id == 'BARC'),
+             aes(x=datetime, y=observation, group = 'obs'), colour = 'black') +
+  geom_line(alpha = 0.3, aes(colour = 'ensemble member (parameter)')) + 
+  #facet_wrap(~site_id, scales = 'free_y') +
+  scale_x_date(expand = c(0,0), date_labels = "%d %b") +
+  labs(y = 'value') +
+  geom_vline(aes(linetype = 'reference_datetime', 
+                 xintercept = as_date(max(targets$datetime))), 
+             colour = 'blue', size = 1.5) +
+  labs(title = 'site_id', subtitle = 'variable = temperature', caption = 'prediction') + 
+  annotate("text", x = min(forecast_df$datetime) - days(10), y = 40, label = "past")  +
+  annotate("text", x = min(forecast_df$datetime) + days(12), y = 40, label = "future")  +
+  theme_bw() +
+  coord_cartesian(xlim = c(min(forecast_df$datetime) - 30, Sys.Date())) +
+  scale_linetype_manual(values = 'dashed', name = '')+
+  scale_colour_manual(name = '', values = 'red')
+```
+
+## Convert to EFI standard
+
+Forecast standards are useful for maintaining consistent formats across forecast generations. For an ensemble forecast the standards specie the y following columns:
+
+-   `datetime`: forecast time stamp for each time step
+-   `reference_datetime`: The start of the forecast; this should be 0 times steps in the future. This should only be one value of reference_datetime in the file
+-   `site_id`: NEON code for site
+-   `family`: name of probability distribution that is described by the parameter values in the parameter column; only `normal` or `ensemble` are currently allowed.
+-   `parameter`: integer value for forecast replicate (from the `.rep` in fable output);
+-   `variable`: standardized variable name from the theme
+-   `prediction`: forecasted value (from the `.sim` column in fable output)
+-   `model_id`: model name (no spaces)
+
+We need to make sure the data frame is in the correct format. This is an ensemble forecast (specified in the `family` column).
+
+```{r}
+# Remember to change the model_id when you make changes to #the model structure!
+my_model_id <- 'model_wind_temp_BARC'
+
+forecast_df_efi_wind_SUGG <- forecast_df %>%
+  mutate(model_id = my_model_id,
+         reference_datetime = as_date(min(datetime)) - days(1),
+         family = 'ensemble',
+         parameter = as.character(parameter)) %>%
+  select(model_id, datetime, reference_datetime, site_id, family, parameter, variable, prediction)
+```
+
+For the NEON forecast Challenge (including the aquatics theme) the following standards are needed for a forecast submission.
+
+Q2: What are the maximum concentrations that will occur in the next 30 days? And when will this maximum level occur?
+
+Take the 95% quantile.
+```{r forecast max}
+forecast_max <- forecast_df %>% 
+  group_by(datetime) %>% 
+  summarise(max = quantile(prediction, 0.95))
+
+forecast_max %>%
+  filter(max == max(max))
+```
+
+
+Q4: What are the chances that the lake(s) will be closed in the next month for swimming?
+ 
+```{r plot prob}
+forecast_p20 <- forecast_df %>% 
+  group_by(datetime) %>% 
+  summarise(n = n(), n_20 = sum(prediction > 20)) %>%
+  mutate(p_20 = n_20 / n) 
+
+ggplot(forecast_p20) +
+  geom_line(aes(x = datetime, y = p_20), size = 2, col = "#0C7C59", alpha = 0.8) +
+  geom_hline(yintercept=0.5, size = 0.8, linetype="dashed", color = "red") +
+    xlab("date") +
+    ylab("probability of closing the lake ([Chla] > 20 mg/L)") +
+    theme_classic()
+
+ggsave("figures/Q4_BARC_wind.jpg")
 ```
